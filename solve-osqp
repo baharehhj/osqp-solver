@@ -1,0 +1,180 @@
+#include "OsqpEigen/OsqpEigen.h"
+#include <iostream>
+#include <fstream>
+#include <Eigen/Dense>
+#include <Eigen/Sparse>
+
+void saveMatrixToFile(const Eigen::Matrix<c_float, Eigen::Dynamic, Eigen::Dynamic>& matrix, std::string filename) {
+    std::ofstream outFile(filename);
+    if (!outFile.is_open()) {
+        std::cerr << "Error opening file: " << filename << std::endl;
+        return;}
+    for (int i = 0; i < matrix.rows(); ++i) {
+        for (int j = 0; j < matrix.cols(); ++j) {
+            outFile << matrix(i, j) << " "; }
+        outFile << std::endl;}
+    outFile.close();
+    std::cout << "Matrix saved to file: " << filename << std::endl;
+}
+
+
+int main() {
+
+    std::string file_name = "data1/";
+    
+
+    //Heissian Matrix
+    Eigen::SparseMatrix< c_float > H(721, 721);
+    std::ifstream hessianFile(file_name+"h2.txt");
+    if (!hessianFile.is_open()) {
+        std::cerr << "Error opening hessian.txt" << std::endl;
+        return 1;
+    }
+    int rows, cols, nnz;
+    hessianFile >> rows >> cols >> nnz;
+    H.resize(rows, cols);
+    std::vector<Eigen::Triplet<c_float>> triplets;
+    for (int i = 0; i < nnz; i++) {
+        int row, col;
+        c_float value;
+        hessianFile >> row >> col >> value;
+        triplets.push_back(Eigen::Triplet<c_float>(row - 1, col - 1, value));
+    }
+    H.setFromTriplets(triplets.begin(), triplets.end());
+    hessianFile.close();
+
+    // f vector
+    Eigen::Matrix<c_float, 721, 1> fval;
+    std::ifstream fvalFile(file_name+"f2.txt");
+    if (!fvalFile.is_open()) {
+        std::cerr << "Error opening fval.txt" << std::endl;
+        return 1;
+    }
+    for (int i = 0; i < rows; i++) {
+        c_float value;
+        if (!(fvalFile >> value)) {
+            std::cerr << "Error reading value from file" << std::endl;
+            return 1;
+        }
+        fval(i, 0) = value;
+    }
+    fvalFile.close();
+    
+    //upperbound
+    Eigen::VectorXd ub1 = Eigen::VectorXd::Constant(721, std::numeric_limits<c_float>::infinity());
+    std::ifstream infile(file_name+"dc2.txt");
+    if (!infile.is_open()) {
+        std::cerr << "Error: Unable to open file." << std::endl;
+        return 1;
+    }
+    std::vector<c_float> values;
+    c_float value;
+
+    while (infile >> value) {
+        values.push_back(value);
+    }
+    infile.close();
+
+    Eigen::VectorXd ub2(values.size());
+    for (int i = 0; i < values.size(); ++i) {
+        ub2(i) = values[i];
+    }
+    Eigen::VectorXd ub(ub1.size() + ub2.size());
+    ub << ub1, ub2;
+
+    //Eigen::VectorXd lb1(721);
+    Eigen::VectorXd lb1 = Eigen::VectorXd::Constant(721, 0);
+    Eigen::VectorXd lb2 = Eigen::VectorXd::Constant(1649, -std::numeric_limits<double>::infinity());
+    Eigen::VectorXd lb(lb1.size() + lb2.size());
+    lb << lb1, lb2;
+   
+
+
+    Eigen::SparseMatrix<c_float> anotherSparseMatrix;
+    std::ifstream sparseMatrixFile(file_name+"Ac2.txt");
+    if (!sparseMatrixFile.is_open()) {
+        std::cerr << "Error opening sparse_matrix.txt" << std::endl;
+        return 1;
+    }
+    int rows1, cols1;
+    sparseMatrixFile >> rows1 >> cols1 >> nnz;
+    std::vector<Eigen::Triplet<c_float>> triplets1;
+    triplets1.reserve(nnz);
+    for (int i = 0; i < nnz; ++i) {
+        int row, col;
+        c_float value;
+        sparseMatrixFile >> row >> col >> value;
+        triplets1.push_back(Eigen::Triplet<c_float>(row - 1, col - 1, value));
+    }
+    sparseMatrixFile.close();
+    anotherSparseMatrix.resize(rows1, cols1);
+    anotherSparseMatrix.setFromTriplets(triplets1.begin(), triplets1.end());
+
+    Eigen::MatrixXd denseMatrix = Eigen::MatrixXd::Identity(721, 721);
+    Eigen::SparseMatrix<c_float> diagonalMatrix = denseMatrix.sparseView();
+
+    Eigen::SparseMatrix<double> MATRIX_JOIN;
+    MATRIX_JOIN.resize(diagonalMatrix.rows() + anotherSparseMatrix.rows(), diagonalMatrix.cols());
+    MATRIX_JOIN.setZero();
+
+    std::vector<Eigen::Triplet<double>> tripletList;
+    tripletList.reserve(diagonalMatrix.nonZeros() + anotherSparseMatrix.nonZeros());
+
+    for (int k = 0; k < diagonalMatrix.outerSize(); ++k)
+    { for (Eigen::SparseMatrix<double>::InnerIterator it(diagonalMatrix, k); it; ++it)
+        {tripletList.push_back(Eigen::Triplet<double>(it.row(), it.col(), it.value()));}}
+
+    for (int k = 0; k < anotherSparseMatrix.outerSize(); ++k)
+    {for (Eigen::SparseMatrix<double>::InnerIterator it(anotherSparseMatrix, k); it; ++it)
+        {tripletList.push_back(Eigen::Triplet<double>(it.row()+721, it.col(), it.value()));}}
+    MATRIX_JOIN.setFromTriplets(tripletList.begin(), tripletList.end());
+
+    //Solver
+    OsqpEigen::Solver solver;
+    solver.data()->setNumberOfVariables(721);
+    solver.data()->setNumberOfConstraints(1649+721);
+    solver.data()->setLinearConstraintsMatrix(MATRIX_JOIN);
+    solver.data()->setHessianMatrix(H);
+    solver.data()->setGradient(fval);
+    solver.data()->setLowerBound(lb);
+    solver.data()->setUpperBound(ub);
+
+    solver.settings()->setRho(.5); 
+    solver.settings()->setMaxIteration(8000);
+    solver.settings()->setWarmStart(true);
+    solver.settings()->setVerbosity(true);
+    solver.settings()->setAdaptiveRho(true);
+    solver.settings()->setLinearSystemSolver(0);
+    solver.settings()->setScaling(1.5);
+    solver.settings()->setAbsoluteTolerance(1.0e-3);  
+    solver.settings()->setRelativeTolerance(1.0e-3);   
+    solver.settings()->setAlpha(1.6);
+    solver.settings()->setPolishRefineIter(6);
+    solver.settings()->setAdaptiveRhoInterval(25);
+ 
+
+    if (!solver.initSolver()) {
+        std::cerr << "Error initializing solver." << std::endl;
+        return 1;
+    }
+    if (solver.solveProblem() != OsqpEigen::ErrorExitFlag::NoError)
+        return 1;
+    Eigen::Matrix<c_float, 721, 1> solution = solver.getSolution();
+
+
+    std::cout << "Solution:" << std::endl;
+    std::cout << solution << std::endl;
+    int zeroCount = 0;
+    for (int i = 0; i < solution.rows(); ++i) {
+        if (solution(i) < 0) {
+            solution(i) = 0;
+            zeroCount++;
+        }
+    }
+
+    std::cout << "Number of zero elements in solution: " << zeroCount << std::endl;
+    saveMatrixToFile(solution, "solution2.txt");
+
+    return 0;
+}
+
