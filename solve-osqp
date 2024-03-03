@@ -61,7 +61,10 @@ int main() {
     fvalFile.close();
     
     //upperbound
+    //ub1   0 < diagnal matrix*x < +infinity 
     Eigen::VectorXd ub1 = Eigen::VectorXd::Constant(721, std::numeric_limits<c_float>::infinity());
+
+    //ub2 -infinity < Ac*x < dc
     std::ifstream infile(file_name+"dc2.txt");
     if (!infile.is_open()) {
         std::cerr << "Error: Unable to open file." << std::endl;
@@ -69,27 +72,28 @@ int main() {
     }
     std::vector<c_float> values;
     c_float value;
-
     while (infile >> value) {
         values.push_back(value);
     }
     infile.close();
-
     Eigen::VectorXd ub2(values.size());
     for (int i = 0; i < values.size(); ++i) {
         ub2(i) = values[i];
     }
+
+    //concat ub1,ub2
     Eigen::VectorXd ub(ub1.size() + ub2.size());
     ub << ub1, ub2;
 
-    //Eigen::VectorXd lb1(721);
+    
+    // lowerbound
     Eigen::VectorXd lb1 = Eigen::VectorXd::Constant(721, 0);
-    Eigen::VectorXd lb2 = Eigen::VectorXd::Constant(1649, -std::numeric_limits<double>::infinity());
+    Eigen::VectorXd lb2 = Eigen::VectorXd::Constant(dc.size(), -std::numeric_limits<double>::infinity());
     Eigen::VectorXd lb(lb1.size() + lb2.size());
     lb << lb1, lb2;
    
 
-
+    //set Ac matrix
     Eigen::SparseMatrix<c_float> anotherSparseMatrix;
     std::ifstream sparseMatrixFile(file_name+"Ac2.txt");
     if (!sparseMatrixFile.is_open()) {
@@ -110,9 +114,13 @@ int main() {
     anotherSparseMatrix.resize(rows1, cols1);
     anotherSparseMatrix.setFromTriplets(triplets1.begin(), triplets1.end());
 
+
+    //set identity matrix
     Eigen::MatrixXd denseMatrix = Eigen::MatrixXd::Identity(721, 721);
     Eigen::SparseMatrix<c_float> diagonalMatrix = denseMatrix.sparseView();
 
+
+    // join constrain matrix
     Eigen::SparseMatrix<double> MATRIX_JOIN;
     MATRIX_JOIN.resize(diagonalMatrix.rows() + anotherSparseMatrix.rows(), diagonalMatrix.cols());
     MATRIX_JOIN.setZero();
@@ -129,13 +137,14 @@ int main() {
         {tripletList.push_back(Eigen::Triplet<double>(it.row()+721, it.col(), it.value()));}}
     MATRIX_JOIN.setFromTriplets(tripletList.begin(), tripletList.end());
 
+
     //Solver
     OsqpEigen::Solver solver;
-    solver.data()->setNumberOfVariables(721);
-    solver.data()->setNumberOfConstraints(1649+721);
+    solver.data()->setNumberOfVariables(static_cast<int>(H.rows()));
+    solver.data()->setNumberOfConstraints(static_cast<int>(H.rows()+Ac.rows()));
     solver.data()->setLinearConstraintsMatrix(MATRIX_JOIN);
     solver.data()->setHessianMatrix(H);
-    solver.data()->setGradient(fval);
+    solver.data()->setGradient(f);
     solver.data()->setLowerBound(lb);
     solver.data()->setUpperBound(ub);
 
@@ -159,8 +168,7 @@ int main() {
     }
     if (solver.solveProblem() != OsqpEigen::ErrorExitFlag::NoError)
         return 1;
-    Eigen::Matrix<c_float, 721, 1> solution = solver.getSolution();
-
+    VectorXd solution = solver.getSolution();
 
     std::cout << "Solution:" << std::endl;
     std::cout << solution << std::endl;
