@@ -1,5 +1,5 @@
 # osqp-solver
-a code to test osqp-eigen
+a code to use osqp for solving qp problem
 
 # 0 < identity matrix*x < +infinity 
 # -infinity < Ac*x < dc
